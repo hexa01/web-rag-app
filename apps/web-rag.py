@@ -21,7 +21,6 @@ import os
 load_dotenv()
 
 
-
 if not os.environ.get('OPENROUTER_API_KEY'):
     st.error('OPENROUTER API KEY not set, please set it in the environment variable')
     st.stop()
@@ -44,7 +43,11 @@ if st.button("Initialize Rag"):
         else:
             st.error('Please choose valid URL option.')
             st.stop()
-        documents = loader.load()
+        try:
+            documents = loader.load()
+        except:
+            st.error('Invalid or unsupported URL')
+        
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap = 200, separators = ["\n\n","\n"," ",""])
         chunks = text_splitter.split_documents(documents)
 
@@ -65,8 +68,8 @@ if st.session_state.vector_store is not None:
     )
 
     prompt = ChatPromptTemplate.from_messages([
-        ('system',"You are a helpful Q/A assistant with the knowledge of Nepal Constitution from the provided documents and answer the questions asked as truthfully as you can in max 3 sentence. If you don't know the answer, just say I don't know, Answer the questions based on the context provided and the question asked."),
-        ('human',"Context: {context}\nQuestion:{question}")
+        ('system',"You are an assistant for question-answering tasks. Given the following extracted parts of a long document and a question, create a final answer with citations. If the answer is not in the context, say 'I don't know'."),
+        ('human',"Context:{context}\n\nQuestion: {question}\n\nFinal Answer (with citation):")
     ])
 
     chain = prompt | chat_model
