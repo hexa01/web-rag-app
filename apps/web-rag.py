@@ -38,7 +38,17 @@ input_mode = st.radio("Pick the input method:", ["URL","FILE"], horizontal= True
 def load_embedding_model():
     return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-documents = []
+@st.cache_resource
+def load_chat_model():
+    return ChatOpenRouter(
+        model="arcee-ai/trinity-large-preview:free",
+        temperature=0.5,
+        max_tokens=1024,
+        max_retries=3,
+    )
+
+if 'documents' not in st.session_state:
+    st.session_state.documents = []
 
 if input_mode == 'URL':
     choice = st.radio("Pick the type of url given:",['Website URL','PDF URL'])
@@ -55,10 +65,10 @@ if input_mode == 'URL':
                 st.error('Please choose valid URL option.')
                 st.stop()
             try:
-                documents.extend(loader.load())
+                st.session_state.documents.extend(loader.load())
                 st.success('URL document successfully loaded!')
-            except:
-                st.error('Invalid or unsupported URL')
+            except Exception as e:
+                st.error(f'Failed to load URL: {e}')
 
             
 elif input_mode == "FILE":
@@ -69,47 +79,41 @@ elif input_mode == "FILE":
                 file_type = uploaded_file.name.split(".")[-1]
                 if file_type == 'txt':
                     raw_text = uploaded_file.read().decode('utf-8')
-                    documents.append(Document(page_content = raw_text))
+                    st.session_state.documents.append(Document(page_content = raw_text))
                     st.success('txt document successfully loaded!')
                     
                 elif file_type == 'pdf':
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='pdf') as tmp_file:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
                         tmp_file.write(uploaded_file.getvalue())
                         temp_path = tmp_file.name
                         try:
                             loader = PyMuPDFLoader(temp_path)
-                            documents.extend(loader.load())
+                            st.session_state.documents.extend(loader.load())
                             st.success('pdf document successfully loaded!')
                         finally:
                             os.unlink(temp_path)
                 else:
                     st.error('File type not supported, Please upload a txt or pdf file.')
+                    st.stop()
             else:
                 st.error("Please upload a file")
                 st.stop()
-            
-else:
-    st.error('Incorrect input method chosen! Please try again with the right option.')
-    st.stop()
 
-if documents:
+
+if st.session_state.documents and not st.session_state.get('rag_initialized'):
     with st.spinner('Now, Initializing Rag, Please wait!'):
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap = 200, separators = ["\n\n","\n"," ",""])
-        chunks = text_splitter.split_documents(documents)
+        chunks = text_splitter.split_documents(st.session_state.documents)
         #Embedding the document
         embedding_model = load_embedding_model()
         st.session_state.vector_store = FAISS.from_documents(documents = chunks, embedding= embedding_model)
-        st.session_state.bm25_retriever = BM25Retriever.from_documents(chunks)
+        st.session_state.bm25_retriever = BM25Retriever.from_documents(chunks, k = 3)
         st.success('Rag Initialized successfully, Now you can ask questions.')
+        st.session_state.rag_initialized = True
 
 if st.session_state.vector_store is not None:
 
-    chat_model = ChatOpenRouter(
-        model="arcee-ai/trinity-large-preview:free",
-        temperature=0.5,
-        max_tokens=1024,
-        max_retries=3,
-    )
+    chat_model = load_chat_model()
 
     prompt = ChatPromptTemplate.from_messages([
         ('system',"You are an assistant for question-answering tasks. Given the following extracted parts of a long document and a question, create a final answer with citations. If the answer is not in the context, say 'I don't know'."),
@@ -129,7 +133,6 @@ if st.session_state.vector_store is not None:
                     
                     vector_retriever = st.session_state.vector_store.as_retriever(search_kwargs = {"k" : 3})
                     bm25_retriever = st.session_state.bm25_retriever
-                    bm25_retriever.k = 3
 
                     # 3. Ensemble (Combines results using RRF)
                     hybrid_retriever = EnsembleRetriever(
@@ -146,20 +149,22 @@ if st.session_state.vector_store is not None:
 
                     st.session_state.last_response = response.content
                     st.session_state.last_context = retrieved_docs
-                except Exception:
+                except Exception as e:
+                    st.error(e)
                     st.error("Could not generate an answer right now. Please try again.")
+                    st.stop()
         
-        with col2:
-            st.subheader('Answer')
-            if 'last_response' in st.session_state:
-                st.write(st.session_state.last_response)
+    with col2:
+        st.subheader('Answer')
+        if 'last_response' in st.session_state:
+            st.write(st.session_state.last_response)
 
-            with st.expander('Show Retrieved Context'):
-                if 'last_context' in st.session_state:
-                    for i,doc in enumerate(st.session_state.last_context, 1):
-                        st.markdown(f'Relevant Context {i}:')
-                        st.markdown(doc.page_content)
-                        st.markdown("-"*20)
+        with st.expander('Show Retrieved Context'):
+            if 'last_context' in st.session_state:
+                for i,doc in enumerate(st.session_state.last_context, 1):
+                    st.markdown(f'Relevant Context {i}:')
+                    st.markdown(doc.page_content)
+                    st.markdown("-"*20)
 
 
 
