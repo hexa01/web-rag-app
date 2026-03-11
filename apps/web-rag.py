@@ -1,3 +1,6 @@
+import tempfile
+
+from langchain_core.documents import Document
 import streamlit as st
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -29,33 +32,74 @@ if not os.environ.get('HF_TOKEN'):
     st.error('HuggingFace TOKEN not set, please set it in the environment variable')
     st.stop()   
 
-choice = st.radio("Pick the type of url given:",['Website URL','PDF URL'])
-url = st.text_input("Enter the URL LINK here.", value = "https://www.constituteproject.org/constitution/Nepal_2015")
+input_mode = st.radio("Pick the input method:", ["URL","FILE"], horizontal= True)
 
-if st.button("Initialize Rag"):
-    with st.spinner("Initializing Rag Setup to enable Q/A"):
+@st.cache_resource
+def load_embedding_model():
+    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-        # Laoding Document from website and splitting into chunks
-        if choice == 'Website URL':
-            loader = WebBaseLoader(url)
-        elif choice == 'PDF URL':
-            loader = PyMuPDFLoader(url)
-        else:
-            st.error('Please choose valid URL option.')
-            st.stop()
-        try:
-            documents = loader.load()
-        except:
-            st.error('Invalid or unsupported URL')
-        
+documents = []
+
+if input_mode == 'URL':
+    choice = st.radio("Pick the type of url given:",['Website URL','PDF URL'])
+    url = st.text_input("Enter the URL LINK here.", value = "https://www.constituteproject.org/constitution/Nepal_2015")
+    if st.button("Initialize Rag"):
+        with st.spinner("Processing and Loading URL, Please wait!"):
+
+            # Laoding Document from website and splitting into chunks
+            if choice == 'Website URL':
+                loader = WebBaseLoader(url)
+            elif choice == 'PDF URL':
+                loader = PyMuPDFLoader(url)
+            else:
+                st.error('Please choose valid URL option.')
+                st.stop()
+            try:
+                documents.extend(loader.load())
+                st.success('URL document successfully loaded!')
+            except:
+                st.error('Invalid or unsupported URL')
+
+            
+elif input_mode == "FILE":
+    uploaded_file = st.file_uploader("Upload the file:", type=['txt','pdf'])
+    if st.button("Initialize Rag"):
+        with st.spinner("Processing and Loading Documents, Please wait!"):
+            if uploaded_file is not None:
+                file_type = uploaded_file.name.split(".")[-1]
+                if file_type == 'txt':
+                    raw_text = uploaded_file.read().decode('utf-8')
+                    documents.append(Document(page_content = raw_text))
+                    st.success('txt document successfully loaded!')
+                    
+                elif file_type == 'pdf':
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='pdf') as tmp_file:
+                        tmp_file.write(uploaded_file.getvalue())
+                        temp_path = tmp_file.name
+                        try:
+                            loader = PyMuPDFLoader(temp_path)
+                            documents.extend(loader.load())
+                            st.success('pdf document successfully loaded!')
+                        finally:
+                            os.unlink(temp_path)
+                else:
+                    st.error('File type not supported, Please upload a txt or pdf file.')
+            else:
+                st.error("Please upload a file")
+                st.stop()
+            
+else:
+    st.error('Incorrect input method chosen! Please try again with the right option.')
+    st.stop()
+
+if documents:
+    with st.spinner('Now, Initializing Rag, Please wait!'):
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap = 200, separators = ["\n\n","\n"," ",""])
         chunks = text_splitter.split_documents(documents)
-
         #Embedding the document
-        embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        embedding_model = load_embedding_model()
         st.session_state.vector_store = FAISS.from_documents(documents = chunks, embedding= embedding_model)
         st.session_state.bm25_retriever = BM25Retriever.from_documents(chunks)
-
         st.success('Rag Initialized successfully, Now you can ask questions.')
 
 if st.session_state.vector_store is not None:
